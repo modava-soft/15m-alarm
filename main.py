@@ -1,4 +1,3 @@
-######FINAL1
 import os
 import time
 import warnings
@@ -24,24 +23,23 @@ SYMBOLS = [
     "NEARUSDT", "SANDUSDT", "AAVEUSDT", "XAUUSDT", "XAGUSDT"
 ]
 
-MAX_SYMBOLS        = 28          # حداکثر تعداد ارز در هر سیکل
-CHARTS_PER_FILE    = 14          # تعداد نمودار در هر فایل
-CANDLE_LIMIT       = 100         # تعداد کندل‌ها
-INTERVAL_MINUTES   = 15          # تایم‌فریم دقیقه
+MAX_SYMBOLS        = 28
+CHARTS_PER_FILE    = 14
+CANDLE_LIMIT       = 150
+INTERVAL_MINUTES   = 15
 
-TELEGRAM_BOT_TOKEN = "6771750492:AAHeldakNtSH1K9jQ3Ja-HQSelBgvWVe_cA"
-TELEGRAM_CHAT_ID = '38255382'
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 SEND_TO_TELEGRAM   = True
 
-ALERT_SYMBOL       = "BTCUSDT"   # ارزی که برای تغییر جهت WMA هشدار بدهد
+ALERT_SYMBOL       = "BTCUSDT"
 ALERT_ENABLED      = True
 
-SLEEP_ON_ERROR_MIN = 15          # زمان انتظار در صورت قطع اینترنت (دقیقه)
-
-OUTPUT_FORMAT      = "png"       # "png" یا "jpg"
+SLEEP_ON_ERROR_MIN = 15
+OUTPUT_FORMAT      = "png"
 
 # ==========================
-# راه‌اندازی تلگرام (telebot)
+# تلگرام (telebot)
 # ==========================
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode=None)
@@ -66,36 +64,26 @@ def send_photo(filename: str, caption: str):
         pass
 
 # ==========================
-# راه‌اندازی ccxt برای بایننس
+# ccxt برای بایننس
 # ==========================
 
-binance = ccxt.gateio()
+binance = ccxt.binance()
 
 # ==========================
-# دریافت داده از OKX
+# OKX
 # ==========================
 
 def symbol_to_okx_inst(symbol: str) -> str:
-    # تبدیل BTCUSDT → BTC-USDT
     if symbol.endswith("USDT"):
         base = symbol[:-4]
         return f"{base}-USDT"
     return symbol
-def symbol_to_ccxt(symbol: str) -> str:
-    # تبدیل BTCUSDT → BTC-USDT
-    if symbol.endswith("USDT"):
-        base = symbol[:-4]
-        return f"{base}/USDT"
-    return symbol
-def fetch_from_okx(symbol: str, limit: int = CANDLE_LIMIT) -> pd.DataFrame | None:
+
+def fetch_from_okx(symbol: str, limit: int = CANDLE_LIMIT):
     try:
         inst_id = symbol_to_okx_inst(symbol)
         url = "https://www.okx.com/api/v5/market/candles"
-        params = {
-            "instId": inst_id,
-            "bar": "15m",
-            "limit": str(limit)
-        }
+        params = {"instId": inst_id, "bar": "15m", "limit": str(limit)}
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
@@ -103,36 +91,33 @@ def fetch_from_okx(symbol: str, limit: int = CANDLE_LIMIT) -> pd.DataFrame | Non
             return None
 
         rows = data["data"]
-        rows.reverse()  # OKX داده‌ها را از جدید به قدیم می‌دهد، برعکس می‌کنیم
+        rows.reverse()
 
         df = pd.DataFrame(rows, columns=[
             "ts", "open", "high", "low", "close", "vol",
             "volCcy", "volCcyQuote", "confirm", "idxPx"
         ])
 
-        df["open"]  = df["open"].astype(float)
-        df["high"]  = df["high"].astype(float)
-        df["low"]   = df["low"].astype(float)
-        df["close"] = df["close"].astype(float)
+        df["open"]   = df["open"].astype(float)
+        df["high"]   = df["high"].astype(float)
+        df["low"]    = df["low"].astype(float)
+        df["close"]  = df["close"].astype(float)
         df["volume"] = df["vol"].astype(float)
-        df["time"]  = pd.to_datetime(df["ts"].astype(int), unit="ms")
+        df["time"]   = pd.to_datetime(df["ts"].astype(int), unit="ms")
 
         return df[["time", "open", "high", "low", "close", "volume"]]
-
     except Exception:
         return None
 
 # ==========================
-# دریافت داده از بایننس با ccxt (fallback)
+# بایننس با ccxt
 # ==========================
 
-def fetch_from_binance(symbol: str, limit: int = CANDLE_LIMIT) -> pd.DataFrame | None:
+def fetch_from_binance(symbol: str, limit: int = CANDLE_LIMIT):
     try:
         ohlcv = binance.fetch_ohlcv(symbol, timeframe="15m", limit=limit)
         if not ohlcv:
-            print(symbol ,'no ccxt')
             return None
-
         df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
         df["time"] = pd.to_datetime(df["time"], unit="ms")
         return df
@@ -140,18 +125,16 @@ def fetch_from_binance(symbol: str, limit: int = CANDLE_LIMIT) -> pd.DataFrame |
         return None
 
 # ==========================
-# سوئیچ خودکار OKX → Binance (ccxt)
+# سوئیچ OKX → Binance
 # ==========================
 
-def fetch_data(symbol: str) -> pd.DataFrame | None:
+def fetch_data(symbol: str):
     df = fetch_from_okx(symbol)
     if df is not None and len(df) > 0:
         return df
-
     df = fetch_from_binance(symbol)
     if df is not None and len(df) > 0:
         return df
-
     return None
 
 # ==========================
@@ -165,11 +148,10 @@ def WMA(series: pd.Series, period: int) -> pd.Series:
     )
 
 # ==========================
-# رسم نمودار کندل‌استیک + SMA + WMA رنگی
+# رسم نمودار
 # ==========================
 
 def plot_candles(ax, df: pd.DataFrame, title: str):
-    # کندل‌ها
     for i in range(len(df)):
         o = df["open"].iloc[i]
         h = df["high"].iloc[i]
@@ -177,21 +159,20 @@ def plot_candles(ax, df: pd.DataFrame, title: str):
         c = df["close"].iloc[i]
         color = "green" if c >= o else "red"
 
-        ax.plot([i, i], [l, h], color=color, linewidth=1)
+        ax.plot([i, i], [l, h], color=color, linewidth=1.5)
         ax.add_patch(plt.Rectangle(
             (i - 0.3, min(o, c)),
             0.6,
             abs(c - o),
-            color=color
+            color=color,
+            linewidth=0
         ))
 
-    # SMA
     df["SMA10"] = df["close"].rolling(10).mean()
     df["SMA30"] = df["close"].rolling(30).mean()
     ax.plot(df["SMA10"].values, color="blue", linewidth=1)
     ax.plot(df["SMA30"].values, color="orange", linewidth=1)
 
-    # WMA رنگی
     df["WMA"] = WMA(df["close"], 10)
     colors = []
     for i in range(len(df)):
@@ -203,23 +184,18 @@ def plot_candles(ax, df: pd.DataFrame, title: str):
 
     for i in range(len(df)):
         if not np.isnan(df["WMA"].iloc[i]):
-            ax.scatter(i, df["WMA"].iloc[i], color=df["WMA_COLOR"].iloc[i], s=8)
+            ax.scatter(i, df["WMA"].iloc[i], color=df["WMA_COLOR"].iloc[i], s=20)
 
-    # عنوان
     ax.set_title(title, fontsize=20)
 
-    # محور عمودی سمت راست
     ax2 = ax.twinx()
     ax2.set_ylim(ax.get_ylim())
     ax2.set_yticks(ax.get_yticks())
     ax2.grid(False)
 
-    # محورهای زمانی بالا و پایین
     times = df["time"]
-    bottom_ticks = []
-    bottom_labels = []
-    top_ticks = []
-    top_labels = []
+    bottom_ticks, bottom_labels = [], []
+    top_ticks, top_labels = [], []
 
     for i, t in enumerate(times):
         if t.minute == 0 and t.hour % 2 == 0:
@@ -238,7 +214,7 @@ def plot_candles(ax, df: pd.DataFrame, title: str):
     ax_top.set_xticklabels(top_labels, rotation=45, fontsize=8)
 
 # ==========================
-# هشدار WMA برای یک ارز خاص
+# هشدار WMA
 # ==========================
 
 def check_wma_alert(df: pd.DataFrame, symbol: str):
@@ -263,7 +239,7 @@ def check_wma_alert(df: pd.DataFrame, symbol: str):
 # ساخت فایل‌های چندنموداری
 # ==========================
 
-def build_grid_images(symbols: list[str]) -> list[str]:
+def build_grid_images(symbols):
     images = []
     total = min(len(symbols), MAX_SYMBOLS)
     symbols = symbols[:total]
@@ -273,7 +249,7 @@ def build_grid_images(symbols: list[str]) -> list[str]:
     for gi, group in enumerate(groups, start=1):
         rows = 7
         cols = 2
-        fig, axes = plt.subplots(rows, cols, figsize=(12, 18))
+        fig, axes = plt.subplots(rows, cols, figsize=(20, 30))
         axes = axes.flatten()
 
         for ax in axes[len(group):]:
@@ -281,11 +257,8 @@ def build_grid_images(symbols: list[str]) -> list[str]:
 
         for idx, sym in enumerate(group):
             ax = axes[idx]
-            df = fetch_from_binance(symbol_to_ccxt(sym))
-            #print(sym)
-            #print(df)
+            df = fetch_data(sym)
             if df is None or len(df) == 0:
-                #send_text(f"⚠️ داده برای {sym} دریافت نشد (OKX و Binance هر دو ناموفق)")
                 ax.axis("off")
                 continue
             plot_candles(ax, df, sym)
@@ -293,14 +266,14 @@ def build_grid_images(symbols: list[str]) -> list[str]:
 
         plt.tight_layout()
         fname = f"charts_group_{gi}.{OUTPUT_FORMAT}"
-        fig.savefig(fname, dpi=250, bbox_inches="tight")
+        fig.savefig(fname, dpi=400, bbox_inches="tight")
         plt.close(fig)
         images.append(fname)
 
     return images
 
 # ==========================
-# اجرای یک سیکل کامل
+# اجرای یک سیکل
 # ==========================
 
 def run_cycle():
@@ -324,25 +297,10 @@ def run_cycle():
     print(f"پایان سیکل — {end_msg}")
 
 # ==========================
-# اجرای برنامه
+# حلقهٔ دائمی برای Railway
 # ==========================
 
 if __name__ == "__main__":
-    #def auto_run():
     while True:
-        try:
-            run_cycle()
-            #startdate=datetime.now().strftime('%H:%M:%S')   
-            #print("🚀 شروع سیکل:", startsate)
-            #notify(f"🚀 شروع سیکل  {symbol} در {startsate}")
-            #run_cycle(24)
-            #enddate=datetime.now().strftime('%H:%M:%S')  
-            #print("🚀 پایان سیکل:", enddate)
-            #notify(f"🚀 پایان سیکل  {symbol} در {enddate}")
-            #print(f"⏳ انتظار {INTERVAL_MINUTES} دقیقه برای سیکل بعدی...")
-            time.sleep(INTERVAL_MINUTES * 60)
-        except:
-            print("🚀 مشکل در اجرای سیکل شاید اینترنت :")#, datetime.now())
-
-
-    run_cycle()
+        run_cycle()
+        time.sleep(INTERVAL_MINUTES * 60)
