@@ -1,1 +1,1 @@
-﻿worker: python main.pysts
+﻿worker: python main.py
