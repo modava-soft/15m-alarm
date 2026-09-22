@@ -1,10 +1,7 @@
-plotly
-﻿pandas
-numpy
-matplotlib
-Pillow
-ccxt
-pyTelegramBotAPI
+telebot==0.0.5
 requests
-python-binance
-pyTelegramBotAPI
+numpy
+pandas
+matplotlib
+plotly
+Pillow
