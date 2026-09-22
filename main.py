@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Modu Bazler v5.3 – نسخه‌ی بازنویسی‌شده برای Railway و 15m Alarm با Binance/KuCoin
+# Modu Bazler v5.3 – نسخه‌ی Railway با 15m Alarm
 
 import os, json, time, threading, datetime as dt
 import requests, numpy as np, pandas as pd
@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
     ],
     "symbols_15m": [
         "BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","ADAUSDT","SOLUSDT","DOGEUSDT","DOTUSDT","MATICUSDT","LTCUSDT",
-        "TRXUSDT","AVAXUSDT","LINKUSDT","ATOMUSDT","XMRUSDT","ETCUSDT","XLMUSDT","FILUSDT","APTUSTS","NEARUSDT",
+        "TRXUSDT","AVAXUSDT","LINKUSDT","ATOMUSDT","XMRUSDT","ETCUSDT","XLMUSDT","FILUSDT","APTUSDT","NEARUSDT",
         "OPUSDT","ARBUSDT","SUIUSDT","PEPEUSDT","TONUSDT","UNIUSDT","AAVEUSDT","INJUSDT","RNDRUSDT","FTMUSDT",
         "NEOUSDT","GALAUSDT","SEIUSDT","TIAUSDT","PYTHUSDT","JTOUSDT","WIFUSDT","JUPUSDT","STRKUSDT","BLURUSDT",
         "RUNEUSDT","RAYUSDT","LDOUSDT","COMPUSDT","CRVUSDT","MKRUSDT","SNXUSDT","GMXUSDT","DYDXUSDT","ENSUSDT"
@@ -154,6 +154,10 @@ bot_4h  = create_bot(TOKEN_4H)
 bot_1d  = create_bot(TOKEN_1D)
 bot_15m = create_bot(TOKEN_15M)
 
+# اگر ربات 1h ساخته نشود، همان اول خطای واضح بدهیم
+if bot_1h is None:
+    raise ValueError("TOKEN_1H تنظیم نشده یا اشتباه است؛ ربات 1h نمی‌تواند ساخته شود.")
+
 LAST_ALARMS = {
     "1h": [],
     "4h": [],
@@ -196,10 +200,6 @@ CYCLE_LOCKS = {
     "15m": SmartLock()
 }
 
-# =========================
-# راهنما
-# =========================
-
 HELP_TEXT = """
 Modu Bazler v5.3 – نسخه‌ی Railway با 15m Alarm
 
@@ -236,10 +236,6 @@ Modu Bazler v5.3 – نسخه‌ی Railway با 15m Alarm
 - 15m: هر ۱۵ دقیقه (سیکل 100 نماد)
 """
 
-# =========================
-# منوی اصلی ربات 1h
-# =========================
-
 def send_main_menu(chat_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("چک یک نماد", "اجرای دستی 1h")
@@ -271,10 +267,6 @@ def start_main(m):
 @bot_1h.message_handler(func=lambda m: m.text == "رفرش منو")
 def refresh_main(m):
     send_main_menu(m.chat.id)
-
-# =========================
-# استارت سایر ربات‌ها
-# =========================
 
 if bot_4h:
     @bot_4h.message_handler(commands=["start"])
@@ -309,10 +301,6 @@ if bot_15m:
         except Exception:
             debug_mark(bot_15m, m.chat.id, 205, "start_15m")
 
-# =========================
-# ریست برنامه
-# =========================
-
 @bot_1h.message_handler(func=lambda m: m.text == "ریست برنامه")
 def reset_app(m):
     cfg = reset_config()
@@ -323,10 +311,6 @@ def reset_app(m):
         send_main_menu(m.chat.id)
     except Exception:
         debug_mark(bot_1h, m.chat.id, 206, "reset_app")
-
-# =========================
-# مدیریت نمادها
-# =========================
 
 def get_symbols(cfg, group):
     return cfg[f"symbols_{group}"]
@@ -421,10 +405,6 @@ def show_symbols_any(m):
     except Exception:
         debug_mark(bot_1h, m.chat.id, 306, "show_symbols_any")
 
-# =========================
-# تنظیم آلارم‌ها
-# =========================
-
 @bot_1h.message_handler(func=lambda m: m.text == "تنظیم آلارم‌ها")
 def alarms_menu(m):
     cfg = load_config()
@@ -459,10 +439,6 @@ def toggle_alarm(c):
     except Exception:
         debug_mark(bot_1h, c.message.chat.id, 402, "toggle_alarm")
 
-# =========================
-# گزارش آلارم‌ها
-# =========================
-
 @bot_1h.message_handler(func=lambda m: m.text == "گزارش آلارم‌ها")
 def alarms_report(m):
     txt = ""
@@ -480,10 +456,6 @@ def alarms_report(m):
         bot_1h.send_message(m.chat.id, txt)
     except Exception:
         debug_mark(bot_1h, m.chat.id, 501, "alarms_report")
-
-# =========================
-# وضعیت سیستم و تنظیمات پیشرفته
-# =========================
 
 @bot_1h.message_handler(func=lambda m: m.text == "وضعیت سیستم")
 def system_status(m):
@@ -550,20 +522,12 @@ def advanced_settings_handler(c):
     except Exception:
         debug_mark(bot_1h, c.message.chat.id, 603, "advanced_settings_handler")
 
-# =========================
-# راهنما
-# =========================
-
 @bot_1h.message_handler(func=lambda m: m.text == "راهنما")
 def help_menu(m):
     try:
         bot_1h.send_message(m.chat.id, HELP_TEXT)
     except Exception:
         debug_mark(bot_1h, m.chat.id, 701, "help_menu")
-
-# =========================
-# دیتا، اندیکاتورها، نمودار
-# =========================
 
 def _binance_interval(i: str) -> str:
     return {"1h": "1h", "4h": "4h", "1d": "1d", "15m": "15m"}[i]
@@ -735,10 +699,6 @@ def detect_alarms(cfg: dict, info: dict, group: str):
         }]
     return alarms
 
-# =========================
-# اجرای سیکل 15m (100 نماد)
-# =========================
-
 def run_cycle_15m(manual=False):
     cfg = load_config()
     lock = CYCLE_LOCKS["15m"]
@@ -777,10 +737,6 @@ def run_cycle_15m(manual=False):
     finally:
         lock.release()
 
-# =========================
-# اجرای فوری 15m از منوی 1h
-# =========================
-
 @bot_1h.message_handler(func=lambda m: m.text == "اجرای فوری 15m")
 def run_now_15m(m):
     try:
@@ -788,10 +744,6 @@ def run_now_15m(m):
     except Exception:
         debug_mark(bot_1h, m.chat.id, 905, "run_now_15m_msg")
     threading.Thread(target=run_cycle_15m, kwargs={"manual": True}, daemon=True).start()
-
-# =========================
-# اجرای چرخه‌ها (فقط 15m در این نسخه)
-# =========================
 
 @bot_1h.message_handler(func=lambda m: m.text == "اجرای چرخه‌ها")
 def run_all_cycles(m):
@@ -801,10 +753,6 @@ def run_all_cycles(m):
         debug_mark(bot_1h, m.chat.id, 906, "run_all_cycles_msg")
     threading.Thread(target=run_cycle_15m, kwargs={"manual": True}, daemon=True).start()
 
-# =========================
-# زمان‌بندی خودکار 15m
-# =========================
-
 def scheduler_15m():
     while True:
         try:
@@ -812,10 +760,6 @@ def scheduler_15m():
         except Exception:
             debug_mark(bot_15m, None, 907, "scheduler_15m_error")
         time.sleep(15 * 60)
-
-# =========================
-# شروع ربات‌ها و Scheduler
-# =========================
 
 def main():
     if bot_15m:
