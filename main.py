@@ -376,7 +376,7 @@ def cb(c):
         process_cycle_all()
 
     elif c.data == "help":
-        help_text = """
+        help_text = ""
 📘 راهنمای ربات 15m Alarm
 
 ✔ پردازش هر 15 دقیقه برای 100 ارز ثبت‌شده
