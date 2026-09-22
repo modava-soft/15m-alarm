@@ -376,7 +376,7 @@ def cb(c):
         process_cycle_all()
 
     elif c.data == "help":
-        help_text = "
+        help_text = """
 📘 راهنمای ربات 15m Alarm
 
 ✔ پردازش هر 15 دقیقه برای 100 ارز ثبت‌شده
@@ -385,4 +385,23 @@ def cb(c):
 ✔ محور عمودی سمت راست مدرج
 ✔ آلارم‌های SMA / RSI / MACD
 ✔ گزارش 10 سیکل اخیر
-"
+✔ دکمه‌ها:
+   ▶️ شروع پردازش
+   ⏸ توقف پردازش
+   🔄 ریست سیکل‌ها
+   ⚙️ تنظیمات پیشرفته
+   🔢 تنظیم تعداد پردازش
+   📸 ساخت نمودار دستی
+   ⚡ اجرای فوری
+"""
+        bot.send_message(c.message.chat.id, help_text)
+        bot.answer_callback_query(c.id, "راهنما ارسال شد")
+
+# -----------------------------
+# شروع ربات + اجرای خودکار
+# -----------------------------
+t = threading.Thread(target=auto_runner)
+t.daemon = True
+t.start()
+
+bot.infinity_polling()
