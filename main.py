@@ -5,19 +5,30 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
-from binance.client import Client
+import requests
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # -----------------------------
-# تنظیمات اصلی
+# دریافت توکن و چت‌آیدی از Railway
 # -----------------------------
-BOT_TOKEN = "8884969815:AAF3OivHwJuKzA9T98Si39IMJSgtQR13a3I"  # مثل 123456789:ABCDEF...
-CHAT_ID   = "38255382"         # عدد چت یا آی‌دی کانال/گروه
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID   = os.getenv("CHAT_ID")
+
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN در Railway تعریف نشده است")
+
+if ":" not in BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN اشتباه است (توکن باید شامل ':' باشد)")
+
+if not CHAT_ID:
+    raise ValueError("❌ CHAT_ID در Railway تعریف نشده است")
 
 bot = telebot.TeleBot(BOT_TOKEN)
-client = Client()
 
+# -----------------------------
+# تنظیمات
+# -----------------------------
 ADVANCED_MODE = False
 PROCESS_LIMIT = 10
 DISPLAY_COUNT = 12
@@ -40,6 +51,53 @@ SYMBOLS = [
     "JTOUSDT","JUPUSDT","ORDIUSDT","TAOUSDT","ARKUSDT","ZENUSDT","LSKUSDT","OMGUSDT","ANTUSDT",
     "TRXUSDT","BANDUSDT","CTSIUSDT","DCRUSDT","MTLUSDT","STXUSDT","CKBUSDT","ARBUSDT","OPUSDT"
 ]
+
+# -----------------------------
+# دریافت داده از بایننس → در صورت خطا کوکوین
+# -----------------------------
+def fetch_ohlc_binance(symbol="BTCUSDT", interval="15m", limit=500):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    r = requests.get(url, params=params, timeout=10)
+    r.raise_for_status()
+    klines = r.json()
+    df = pd.DataFrame(klines, columns=[
+        "t","o","h","l","c","v","ct","qv","n","tb","tbv","i"
+    ])
+    df["t"] = pd.to_datetime(df["t"], unit="ms")
+    df.set_index("t", inplace=True)
+    df = df[["o","h","l","c","v"]].astype(float)
+    return df
+
+def fetch_ohlc_kucoin(symbol="BTCUSDT", interval="15m", limit=500):
+    base = symbol.replace("USDT", "-USDT")
+    url = "https://api.kucoin.com/api/v1/market/candles"
+    params = {"symbol": base, "type": "15min"}
+    r = requests.get(url, params=params, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("code") != "200000":
+        raise Exception("KuCoin error")
+    candles = data["data"][:limit]
+    rows = []
+    for c in candles:
+        ts = int(c[0])
+        o = float(c[1])
+        h = float(c[3])
+        l = float(c[4])
+        cl = float(c[2])
+        v = float(c[5])
+        rows.append([ts, o, h, l, cl, v])
+    df = pd.DataFrame(rows, columns=["t","o","h","l","c","v"])
+    df["t"] = pd.to_datetime(df["t"], unit="s")
+    df.set_index("t", inplace=True)
+    return df
+
+def fetch_ohlc(symbol="BTCUSDT", interval="15m", limit=500):
+    try:
+        return fetch_ohlc_binance(symbol, interval, limit)
+    except Exception:
+        return fetch_ohlc_kucoin(symbol, interval, limit)
 
 # -----------------------------
 # اندیکاتورها
@@ -72,20 +130,7 @@ def compute_indicators(df):
     return df
 
 # -----------------------------
-# دریافت داده از بایننس
-# -----------------------------
-def fetch_ohlc(symbol="BTCUSDT", interval="15m", lookback_days=1, max_bars=500):
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=max_bars)
-    df = pd.DataFrame(klines, columns=[
-        "t","o","h","l","c","v","ct","qv","n","tb","tbv","i"
-    ])
-    df["t"] = pd.to_datetime(df["t"], unit="ms")
-    df.set_index("t", inplace=True)
-    df = df[["o","h","l","c","v"]].astype(float)
-    return df
-
-# -----------------------------
-# ساخت نمودار کندل + اندیکاتورها
+# ساخت نمودار
 # -----------------------------
 def create_chart(df, symbol="BTCUSDT", file_name="chart.jpg"):
     df = compute_indicators(df)
@@ -102,25 +147,29 @@ def create_chart(df, symbol="BTCUSDT", file_name="chart.jpg"):
 
     wma = df["WMA20"]
     slope = df["WMA20_slope"]
-    wma_up   = wma.where(slope >= 0)
-    wma_down = wma.where(slope < 0)
-    ax1.plot(df.index, wma_up,   color="green", linewidth=2, label="WMA20 Up")
-    ax1.plot(df.index, wma_down, color="red",   linewidth=2, label="WMA20 Down")
+    ax1.plot(df.index, wma.where(slope >= 0), color="green", linewidth=2)
+    ax1.plot(df.index, wma.where(slope < 0),  color="red",   linewidth=2)
 
     ax1.legend(loc="upper left")
     ax1.set_title(f"{symbol} - 15m Chart")
+    ax1.yaxis.tick_right()
+    ax1.yaxis.set_label_position("right")
 
     ax2 = fig.add_subplot(3, 1, 2)
     ax2.plot(df.index, df["RSI"], color="blue")
     ax2.axhline(70, color="red", linestyle="--")
     ax2.axhline(30, color="green", linestyle="--")
     ax2.set_title("RSI")
+    ax2.yaxis.tick_right()
+    ax2.yaxis.set_label_position("right")
 
     ax3 = fig.add_subplot(3, 1, 3)
     ax3.plot(df.index, df["MACD"],   color="black", label="MACD")
     ax3.plot(df.index, df["Signal"], color="red",   label="Signal")
     ax3.legend(loc="upper left")
     ax3.set_title("MACD")
+    ax3.yaxis.tick_right()
+    ax3.yaxis.set_label_position("right")
 
     plt.tight_layout()
     plt.savefig(file_name, dpi=300)
@@ -129,10 +178,10 @@ def create_chart(df, symbol="BTCUSDT", file_name="chart.jpg"):
     return file_name
 
 # -----------------------------
-# ساخت ۱۲ نمودار برای یک ارز
+# ساخت ۱۲ نمودار
 # -----------------------------
 def create_12_charts(symbol="BTCUSDT"):
-    df = fetch_ohlc(symbol, "15m", 1, 500)
+    df = fetch_ohlc(symbol, "15m", 500)
 
     folder = "charts"
     os.makedirs(folder, exist_ok=True)
@@ -146,7 +195,7 @@ def create_12_charts(symbol="BTCUSDT"):
     return files
 
 # -----------------------------
-# سیستم آلارم‌ها
+# آلارم‌ها
 # -----------------------------
 def check_alarms(df):
     alarms = []
@@ -185,7 +234,7 @@ def check_alarms(df):
     return alarms
 
 # -----------------------------
-# ذخیره گزارش ۱۰ سیکل
+# ذخیره گزارش
 # -----------------------------
 def save_cycle_report(alarms):
     global CYCLE_HISTORY
@@ -195,7 +244,7 @@ def save_cycle_report(alarms):
         CYCLE_HISTORY = CYCLE_HISTORY[-10:]
 
 # -----------------------------
-# ارسال گزارش به ربات
+# ارسال گزارش
 # -----------------------------
 def send_report_to_bot(symbol, alarms, chart_files):
     text = f"📊 گزارش پردازش جدید برای {symbol}:\n\n"
@@ -217,7 +266,7 @@ def send_report_to_bot(symbol, alarms, chart_files):
     bot.send_message(CHAT_ID, history_text)
 
 # -----------------------------
-# پردازش 100 ارز ثبت‌شده
+# پردازش 100 ارز
 # -----------------------------
 def process_cycle_all():
     if not RUNNING:
@@ -227,7 +276,7 @@ def process_cycle_all():
 
     for sym in SYMBOLS:
         try:
-            df = fetch_ohlc(sym, "15m", 1, 500)
+            df = fetch_ohlc(sym, "15m", 500)
             chart_files = create_12_charts(sym)
             alarms = check_alarms(df)
             save_cycle_report(alarms)
@@ -260,6 +309,7 @@ def main_menu():
     kb.add(InlineKeyboardButton("⏸ توقف پردازش", callback_data="stop"))
     kb.add(InlineKeyboardButton("🔢 تنظیم تعداد پردازش", callback_data="set_process"))
     kb.add(InlineKeyboardButton("📸 ساخت نمودار دستی", callback_data="manual"))
+    kb.add(InlineKeyboardButton("⚡ اجرای فوری", callback_data="run_now"))
     kb.add(InlineKeyboardButton("📘 راهنمای ربات", callback_data="help"))
     return kb
 
@@ -320,30 +370,18 @@ def cb(c):
                 bot.send_message(c.message.chat.id, f"❌ خطا در {sym}: {e}")
                 continue
 
+    elif c.data == "run_now":
+        bot.answer_callback_query(c.id, "اجرای فوری")
+        bot.send_message(c.message.chat.id, "⚡ اجرای فوری پردازش 100 ارز...")
+        process_cycle_all()
+
     elif c.data == "help":
         help_text = """
 📘 راهنمای ربات 15m Alarm
 
 ✔ پردازش هر 15 دقیقه برای 100 ارز ثبت‌شده
+✔ استفاده از API عمومی بایننس و در صورت خطا، کوکوین
 ✔ ساخت 12 نمودار برای هر ارز (کندل + RSI + MACD + SMA + WMA رنگی)
+✔ محور عمودی سمت راست مدرج
 ✔ آلارم‌های SMA / RSI / MACD
 ✔ گزارش 10 سیکل اخیر
-✔ دکمه‌ها:
-   ▶️ شروع پردازش
-   ⏸ توقف پردازش
-   🔄 ریست سیکل‌ها
-   ⚙️ تنظیمات پیشرفته
-   🔢 تنظیم تعداد پردازش
-   📸 ساخت نمودار دستی
-"""
-        bot.send_message(c.message.chat.id, help_text)
-        bot.answer_callback_query(c.id, "راهنما ارسال شد")
-
-# -----------------------------
-# شروع ربات + اجرای خودکار
-# -----------------------------
-t = threading.Thread(target=auto_runner)
-t.daemon = True
-t.start()
-
-bot.infinity_polling()
