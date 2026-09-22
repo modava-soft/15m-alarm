@@ -1,306 +1,355 @@
 import os
 import time
-import warnings
-import requests
+import telebot
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
-from PIL import Image
-import telebot
-import ccxt
+from binance.client import Client
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import threading
 
-warnings.filterwarnings("ignore")
+# -----------------------------
+# تنظیمات اصلی
+# -----------------------------
+BOT_TOKEN = "YOUR_TELEGRAM_TOKEN"
+CHAT_ID   = "YOUR_CHAT_ID"
 
-# ==========================
-# تنظیمات قابل تغییر
-# ==========================
+bot = telebot.TeleBot(BOT_TOKEN)
+client = Client()
 
-SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT",
-    "AVAXUSDT", "TRXUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT", "TONUSDT", "LTCUSDT",
-    "ATOMUSDT", "XLMUSDT", "APTUSDT", "FILUSDT", "ETCUSDT", "HBARUSDT", "ICPUSDT",
-    "NEARUSDT", "SANDUSDT", "AAVEUSDT", "XAUUSDT", "XAGUSDT"
-]
+# تنظیمات پیشرفته
+ADVANCED_MODE = False
+PROCESS_LIMIT = 10
+DISPLAY_COUNT = 12
+CYCLE_HISTORY = []
+RUNNING = True
 
-MAX_SYMBOLS        = 28
-CHARTS_PER_FILE    = 14
-CANDLE_LIMIT       = 150
-INTERVAL_MINUTES   = 15
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
-SEND_TO_TELEGRAM   = True
-
-ALERT_SYMBOL       = "BTCUSDT"
-ALERT_ENABLED      = True
-
-SLEEP_ON_ERROR_MIN = 15
-OUTPUT_FORMAT      = "png"
-
-# ==========================
-# تلگرام (telebot)
-# ==========================
-
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode=None)
-
-def send_text(msg: str):
-    if not SEND_TO_TELEGRAM:
-        return
-    try:
-        bot.send_message(TELEGRAM_CHAT_ID, msg)
-    except Exception:
-        pass
-
-def send_photo(filename: str, caption: str):
-    if not SEND_TO_TELEGRAM:
-        return
-    if not os.path.exists(filename):
-        return
-    try:
-        with open(filename, "rb") as f:
-            bot.send_photo(TELEGRAM_CHAT_ID, f, caption=caption)
-    except Exception:
-        pass
-
-# ==========================
-# ccxt برای بایننس
-# ==========================
-
-binance = ccxt.binance()
-
-# ==========================
-# OKX
-# ==========================
-
-def symbol_to_okx_inst(symbol: str) -> str:
-    if symbol.endswith("USDT"):
-        base = symbol[:-4]
-        return f"{base}-USDT"
-    return symbol
-
-def fetch_from_okx(symbol: str, limit: int = CANDLE_LIMIT):
-    try:
-        inst_id = symbol_to_okx_inst(symbol)
-        url = "https://www.okx.com/api/v5/market/candles"
-        params = {"instId": inst_id, "bar": "15m", "limit": str(limit)}
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if "data" not in data or len(data["data"]) == 0:
-            return None
-
-        rows = data["data"]
-        rows.reverse()
-
-        df = pd.DataFrame(rows, columns=[
-            "ts", "open", "high", "low", "close", "vol",
-            "volCcy", "volCcyQuote", "confirm", "idxPx"
-        ])
-
-        df["open"]   = df["open"].astype(float)
-        df["high"]   = df["high"].astype(float)
-        df["low"]    = df["low"].astype(float)
-        df["close"]  = df["close"].astype(float)
-        df["volume"] = df["vol"].astype(float)
-        df["time"]   = pd.to_datetime(df["ts"].astype(int), unit="ms")
-
-        return df[["time", "open", "high", "low", "close", "volume"]]
-    except Exception:
-        return None
-
-# ==========================
-# بایننس با ccxt
-# ==========================
-
-def fetch_from_binance(symbol: str, limit: int = CANDLE_LIMIT):
-    try:
-        ohlcv = binance.fetch_ohlcv(symbol, timeframe="15m", limit=limit)
-        if not ohlcv:
-            return None
-        df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
-        df["time"] = pd.to_datetime(df["time"], unit="ms")
-        return df
-    except Exception:
-        return None
-
-# ==========================
-# سوئیچ OKX → Binance
-# ==========================
-
-def fetch_data(symbol: str):
-    df = fetch_from_okx(symbol)
-    if df is not None and len(df) > 0:
-        return df
-    df = fetch_from_binance(symbol)
-    if df is not None and len(df) > 0:
-        return df
-    return None
-
-# ==========================
+# -----------------------------
 # اندیکاتورها
-# ==========================
+# -----------------------------
+def compute_indicators(df):
+    df["SMA10"]  = df["c"].rolling(10).mean()
+    df["SMA50"]  = df["c"].rolling(50).mean()
+    df["SMA100"] = df["c"].rolling(100).mean()
+    df["SMA200"] = df["c"].rolling(200).mean()
 
-def WMA(series: pd.Series, period: int) -> pd.Series:
-    weights = np.arange(1, period + 1)
-    return series.rolling(period).apply(
-        lambda prices: np.dot(prices, weights) / weights.sum(), raw=True
+    # WMA20
+    df["WMA20"] = df["c"].rolling(20).apply(
+        lambda x: np.average(x, weights=np.arange(1, len(x)+1)),
+        raw=True
     )
+    df["WMA20_slope"] = df["WMA20"].diff()
 
-# ==========================
-# رسم نمودار
-# ==========================
+    # RSI
+    delta = df["c"].diff()
+    gain  = delta.where(delta > 0, 0)
+    loss  = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
 
-def plot_candles(ax, df: pd.DataFrame, title: str):
-    for i in range(len(df)):
-        o = df["open"].iloc[i]
-        h = df["high"].iloc[i]
-        l = df["low"].iloc[i]
-        c = df["close"].iloc[i]
-        color = "green" if c >= o else "red"
+    # MACD
+    df["EMA12"] = df["c"].ewm(span=12, adjust=False).mean()
+    df["EMA26"] = df["c"].ewm(span=26, adjust=False).mean()
+    df["MACD"] = df["EMA12"] - df["EMA26"]
+    df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
 
-        ax.plot([i, i], [l, h], color=color, linewidth=1.5)
-        ax.add_patch(plt.Rectangle(
-            (i - 0.3, min(o, c)),
-            0.6,
-            abs(c - o),
-            color=color,
-            linewidth=0
-        ))
+    return df
+# -----------------------------
+# دریافت داده از بایننس
+# -----------------------------
+def fetch_ohlc(symbol="BTCUSDT", interval="15m", lookback_days=1, max_bars=500):
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=max_bars)
+    df = pd.DataFrame(klines, columns=[
+        "t","o","h","l","c","v","ct","qv","n","tb","tbv","i"
+    ])
+    df["t"] = pd.to_datetime(df["t"], unit="ms")
+    df.set_index("t", inplace=True)
+    df = df[["o","h","l","c","v"]].astype(float)
+    return df
 
-    df["SMA10"] = df["close"].rolling(10).mean()
-    df["SMA30"] = df["close"].rolling(30).mean()
-    ax.plot(df["SMA10"].values, color="blue", linewidth=1)
-    ax.plot(df["SMA30"].values, color="orange", linewidth=1)
 
-    df["WMA"] = WMA(df["close"], 10)
-    colors = []
-    for i in range(len(df)):
-        if i == 0 or np.isnan(df["WMA"].iloc[i]) or np.isnan(df["WMA"].iloc[i - 1]):
-            colors.append("gray")
-        else:
-            colors.append("green" if df["WMA"].iloc[i] > df["WMA"].iloc[i - 1] else "red")
-    df["WMA_COLOR"] = colors
+# -----------------------------
+# ساخت نمودار کندل + اندیکاتورها
+# -----------------------------
+def create_chart(df, symbol="BTCUSDT", file_name="chart.jpg"):
 
-    for i in range(len(df)):
-        if not np.isnan(df["WMA"].iloc[i]):
-            ax.scatter(i, df["WMA"].iloc[i], color=df["WMA_COLOR"].iloc[i], s=20)
+    df = compute_indicators(df)
 
-    ax.set_title(title, fontsize=20)
+    plt.style.use("ggplot")
+    fig = plt.figure(figsize=(18, 12))
 
-    ax2 = ax.twinx()
-    ax2.set_ylim(ax.get_ylim())
-    ax2.set_yticks(ax.get_yticks())
-    ax2.grid(False)
+    # -----------------------------
+    # نمودار کندل (Close)
+    # -----------------------------
+    ax1 = fig.add_subplot(3, 1, 1)
+    ax1.plot(df.index, df["c"], color="black", label="Close")
 
-    times = df["time"]
-    bottom_ticks, bottom_labels = [], []
-    top_ticks, top_labels = [], []
+    # SMAها
+    ax1.plot(df.index, df["SMA10"],  color="blue",   label="SMA10")
+    ax1.plot(df.index, df["SMA50"],  color="orange", label="SMA50")
+    ax1.plot(df.index, df["SMA100"], color="purple", label="SMA100")
+    ax1.plot(df.index, df["SMA200"], color="brown",  label="SMA200")
 
-    for i, t in enumerate(times):
-        if t.minute == 0 and t.hour % 2 == 0:
-            bottom_ticks.append(i)
-            bottom_labels.append(t.strftime("%H:%M"))
-        elif t.minute == 0 and t.hour % 2 == 1:
-            top_ticks.append(i)
-            top_labels.append(t.strftime("%H:%M"))
+    # -----------------------------
+    # WMA رنگی
+    # -----------------------------
+    wma = df["WMA20"]
+    slope = df["WMA20_slope"]
 
-    ax.set_xticks(bottom_ticks)
-    ax.set_xticklabels(bottom_labels, rotation=45, fontsize=8)
+    wma_up   = wma.where(slope >= 0)
+    wma_down = wma.where(slope < 0)
 
-    ax_top = ax.twiny()
-    ax_top.set_xlim(ax.get_xlim())
-    ax_top.set_xticks(top_ticks)
-    ax_top.set_xticklabels(top_labels, rotation=45, fontsize=8)
+    ax1.plot(df.index, wma_up,   color="green", linewidth=2, label="WMA20 Up")
+    ax1.plot(df.index, wma_down, color="red",   linewidth=2, label="WMA20 Down")
 
-# ==========================
-# هشدار WMA
-# ==========================
+    ax1.legend(loc="upper left")
+    ax1.set_title(f"{symbol} - 15m Chart")
 
-def check_wma_alert(df: pd.DataFrame, symbol: str):
-    if not ALERT_ENABLED:
+    # -----------------------------
+    # RSI
+    # -----------------------------
+    ax2 = fig.add_subplot(3, 1, 2)
+    ax2.plot(df.index, df["RSI"], color="blue")
+    ax2.axhline(70, color="red", linestyle="--")
+    ax2.axhline(30, color="green", linestyle="--")
+    ax2.set_title("RSI")
+
+    # -----------------------------
+    # MACD
+    # -----------------------------
+    ax3 = fig.add_subplot(3, 1, 3)
+    ax3.plot(df.index, df["MACD"],   color="black", label="MACD")
+    ax3.plot(df.index, df["Signal"], color="red",   label="Signal")
+    ax3.legend(loc="upper left")
+    ax3.set_title("MACD")
+
+    plt.tight_layout()
+    plt.savefig(file_name, dpi=300)
+    plt.close()
+
+    return file_name
+
+
+# -----------------------------
+# ساخت ۱۲ نمودار در یک فایل JPG
+# -----------------------------
+def create_12_charts(symbol="BTCUSDT"):
+    df = fetch_ohlc(symbol, "15m", 1, 500)
+
+    folder = "charts"
+    os.makedirs(folder, exist_ok=True)
+
+    files = []
+
+    for i in range(12):
+        file_name = f"{folder}/chart_{i+1}.jpg"
+        create_chart(df, symbol, file_name)
+        files.append(file_name)
+
+    return files
+
+# -----------------------------
+# سیستم آلارم‌ها
+# -----------------------------
+def check_alarms(df):
+    alarms = []
+
+    # برخورد قیمت با SMA10
+    if df["c"].iloc[-1] > df["SMA10"].iloc[-1]:
+        alarms.append("قیمت بالای SMA10")
+    elif df["c"].iloc[-1] < df["SMA10"].iloc[-1]:
+        alarms.append("قیمت پایین SMA10")
+
+    # برخورد قیمت با SMA50
+    if df["c"].iloc[-1] > df["SMA50"].iloc[-1]:
+        alarms.append("قیمت بالای SMA50")
+    elif df["c"].iloc[-1] < df["SMA50"].iloc[-1]:
+        alarms.append("قیمت پایین SMA50")
+
+    # برخورد قیمت با SMA100
+    if df["c"].iloc[-1] > df["SMA100"].iloc[-1]:
+        alarms.append("قیمت بالای SMA100")
+    elif df["c"].iloc[-1] < df["SMA100"].iloc[-1]:
+        alarms.append("قیمت پایین SMA100")
+
+    # برخورد قیمت با SMA200
+    if df["c"].iloc[-1] > df["SMA200"].iloc[-1]:
+        alarms.append("قیمت بالای SMA200")
+    elif df["c"].iloc[-1] < df["SMA200"].iloc[-1]:
+        alarms.append("قیمت پایین SMA200")
+
+    # RSI
+    rsi = df["RSI"].iloc[-1]
+    if rsi > 70:
+        alarms.append("RSI بالای 70 → اشباع خرید")
+    elif rsi < 30:
+        alarms.append("RSI پایین 30 → اشباع فروش")
+
+    # MACD کراس
+    if df["MACD"].iloc[-1] > df["Signal"].iloc[-1]:
+        alarms.append("MACD کراس صعودی")
+    else:
+        alarms.append("MACD کراس نزولی")
+
+    return alarms
+
+
+# -----------------------------
+# ذخیره گزارش ۱۰ سیکل
+# -----------------------------
+def save_cycle_report(alarms):
+    global CYCLE_HISTORY
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    CYCLE_HISTORY.append({"time": timestamp, "alarms": alarms})
+
+    # فقط ۱۰ سیکل نگه داریم
+    if len(CYCLE_HISTORY) > 10:
+        CYCLE_HISTORY = CYCLE_HISTORY[-10:]
+
+
+# -----------------------------
+# ارسال گزارش به ربات
+# -----------------------------
+def send_report_to_bot(alarms, chart_files):
+    text = "📊 گزارش پردازش جدید:\n\n"
+
+    for a in alarms:
+        text += f"• {a}\n"
+
+    bot.send_message(CHAT_ID, text)
+
+    # ارسال عکس‌ها
+    for f in chart_files:
+        with open(f, "rb") as img:
+            bot.send_photo(CHAT_ID, img)
+
+    # ارسال تاریخچه ۱۰ سیکل
+    history_text = "🕒 تاریخچه ۱۰ سیکل اخیر:\n\n"
+    for item in CYCLE_HISTORY:
+        history_text += f"{item['time']}:\n"
+        for a in item["alarms"]:
+            history_text += f"  • {a}\n"
+        history_text += "\n"
+
+    bot.send_message(CHAT_ID, history_text)
+
+
+# -----------------------------
+# اجرای پردازش اصلی
+# -----------------------------
+def process_cycle(symbol="BTCUSDT"):
+    if not RUNNING:
         return
-    if symbol != ALERT_SYMBOL:
-        return
-    if len(df) < 3:
-        return
 
-    wma = df["WMA"].values
-    if np.isnan(wma[-1]) or np.isnan(wma[-2]):
-        return
+    df = fetch_ohlc(symbol, "15m", 1, 500)
 
-    prev_dir = wma[-2] - wma[-3] if len(wma) >= 3 and not np.isnan(wma[-3]) else 0
-    curr_dir = wma[-1] - wma[-2]
+    # ساخت ۱۲ نمودار
+    chart_files = create_12_charts(symbol)
 
-    if prev_dir * curr_dir < 0:
-        send_text(f"⚠️ تغییر جهت WMA در {symbol}")
+    # آلارم‌ها
+    alarms = check_alarms(df)
 
-# ==========================
-# ساخت فایل‌های چندنموداری
-# ==========================
+    # ذخیره در تاریخچه
+    save_cycle_report(alarms)
 
-def build_grid_images(symbols):
-    images = []
-    total = min(len(symbols), MAX_SYMBOLS)
-    symbols = symbols[:total]
+    # ارسال به ربات
+    send_report_to_bot(alarms, chart_files)
 
-    groups = [symbols[i:i + CHARTS_PER_FILE] for i in range(0, total, CHARTS_PER_FILE)]
 
-    for gi, group in enumerate(groups, start=1):
-        rows = 7
-        cols = 2
-        fig, axes = plt.subplots(rows, cols, figsize=(20, 30))
-        axes = axes.flatten()
-
-        for ax in axes[len(group):]:
-            ax.axis("off")
-
-        for idx, sym in enumerate(group):
-            ax = axes[idx]
-            df = fetch_data(sym)
-            if df is None or len(df) == 0:
-                ax.axis("off")
-                continue
-            plot_candles(ax, df, sym)
-            check_wma_alert(df, sym)
-
-        plt.tight_layout()
-        fname = f"charts_group_{gi}.{OUTPUT_FORMAT}"
-        fig.savefig(fname, dpi=400, bbox_inches="tight")
-        plt.close(fig)
-        images.append(fname)
-
-    return images
-
-# ==========================
-# اجرای یک سیکل
-# ==========================
-
-def run_cycle():
-    start_msg = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    send_text(f"🚀 شروع سیکل جدید — {start_msg}")
-    print(f"شروع سیکل جدید — {start_msg}")
-
-    try:
-        files = build_grid_images(SYMBOLS)
-    except Exception:
-        send_text("⚠️ خطا در ارتباط با اینترنت یا صرافی‌ها — مکث ۱۵ دقیقه")
-        print("خطا در ارتباط با اینترنت یا صرافی‌ها — مکث ۱۵ دقیقه")
-        time.sleep(SLEEP_ON_ERROR_MIN * 60)
-        return
-
-    for f in files:
-        send_photo(f, f"📊 نمودارها — {f}")
-
-    end_msg = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    send_text(f"🏁 پایان سیکل — {end_msg}")
-    print(f"پایان سیکل — {end_msg}")
-
-# ==========================
-# حلقهٔ دائمی برای Railway
-# ==========================
-
-if __name__ == "__main__":
+# -----------------------------
+# اجرای خودکار هر ۱۵ دقیقه
+# -----------------------------
+def auto_runner():
     while True:
-        run_cycle()
-        time.sleep(INTERVAL_MINUTES * 60)
+        if RUNNING:
+            process_cycle()
+        time.sleep(900)   # هر ۱۵ دقیقه
+
+
+# -----------------------------
+# دکمه‌های حرفه‌ای ربات
+# -----------------------------
+def main_menu():
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🔄 ریست سیکل‌ها", callback_data="reset"))
+    kb.add(InlineKeyboardButton("⚙️ تنظیمات پیشرفته", callback_data="advanced"))
+    kb.add(InlineKeyboardButton("▶️ شروع پردازش", callback_data="start"))
+    kb.add(InlineKeyboardButton("⏸ توقف پردازش", callback_data="stop"))
+    kb.add(InlineKeyboardButton("🔢 تنظیم تعداد پردازش", callback_data="set_process"))
+    kb.add(InlineKeyboardButton("📸 ساخت نمودار دستی", callback_data="manual"))
+    return kb
+
+
+@bot.message_handler(commands=["start"])
+def start_cmd(msg):
+    bot.send_message(msg.chat.id, "منوی اصلی:", reply_markup=main_menu())
+
+
+# -----------------------------
+# هندل دکمه‌ها
+# -----------------------------
+@bot.callback_query_handler(func=lambda c: True)
+def cb(c):
+
+    global RUNNING, ADVANCED_MODE, PROCESS_LIMIT
+
+    # ریست سیکل‌ها
+    if c.data == "reset":
+        CYCLE_HISTORY.clear()
+        bot.answer_callback_query(c.id, "ریست شد")
+        bot.send_message(c.message.chat.id, "✔ تاریخچه ۱۰ سیکل پاک شد")
+
+    # فعال/غیرفعال کردن حالت پیشرفته
+    elif c.data == "advanced":
+        ADVANCED_MODE = not ADVANCED_MODE
+        status = "فعال شد" if ADVANCED_MODE else "غیرفعال شد"
+        bot.answer_callback_query(c.id, status)
+        bot.send_message(c.message.chat.id, f"⚙️ حالت پیشرفته: {status}")
+
+    # شروع پردازش
+    elif c.data == "start":
+        RUNNING = True
+        bot.answer_callback_query(c.id, "شروع شد")
+        bot.send_message(c.message.chat.id, "▶️ پردازش هر ۱۵ دقیقه فعال شد")
+
+    # توقف پردازش
+    elif c.data == "stop":
+        RUNNING = False
+        bot.answer_callback_query(c.id, "متوقف شد")
+        bot.send_message(c.message.chat.id, "⏸ پردازش متوقف شد")
+
+    # تنظیم تعداد پردازش
+    elif c.data == "set_process":
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("۵", callback_data="pl_5"))
+        kb.add(InlineKeyboardButton("۱۰", callback_data="pl_10"))
+        kb.add(InlineKeyboardButton("۲۰", callback_data="pl_20"))
+        bot.send_message(c.message.chat.id, "🔢 تعداد پردازش را انتخاب کن:", reply_markup=kb)
+
+    elif c.data.startswith("pl_"):
+        PROCESS_LIMIT = int(c.data.split("_")[1])
+        bot.answer_callback_query(c.id, "تنظیم شد")
+        bot.send_message(c.message.chat.id, f"✔ تعداد پردازش: {PROCESS_LIMIT}")
+
+    # ساخت نمودار دستی
+    elif c.data == "manual":
+        files = create_12_charts()
+        bot.answer_callback_query(c.id, "ساخته شد")
+        bot.send_message(c.message.chat.id, "📸 نمودارها ساخته شدند")
+        for f in files:
+            with open(f, "rb") as img:
+                bot.send_photo(c.message.chat.id, img)
+
+
+# -----------------------------
+# شروع ربات + اجرای خودکار
+# -----------------------------
+t = threading.Thread(target=auto_runner)
+t.daemon = True
+t.start()
+
+bot.infinity_polling()
