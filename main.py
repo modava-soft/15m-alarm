@@ -12,8 +12,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # -----------------------------
 # تنظیمات اصلی
 # -----------------------------
-BOT_TOKEN = "YOUR_TELEGRAM_TOKEN"  # مثل 123456789:ABCDEF...
-CHAT_ID   = "YOUR_CHAT_ID"         # عدد چت یا آی‌دی کانال/گروه
+BOT_TOKEN = "8884969815:AAF3OivHwJuKzA9T98Si39IMJSgtQR13a3I"  # مثل 123456789:ABCDEF...
+CHAT_ID   = "38255382"         # عدد چت یا آی‌دی کانال/گروه
 
 bot = telebot.TeleBot(BOT_TOKEN)
 client = Client()
